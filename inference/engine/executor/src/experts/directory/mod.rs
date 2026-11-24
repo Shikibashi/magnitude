@@ -2091,7 +2091,9 @@ impl Directory {
             false
         };
 
-        if should_promote {
+        // Held records are eligible for bank replacement and prompt scratch.
+        // A joined consumer can outlive the landing's initiating step.
+        if can_reuse && should_promote {
             let staged @ (layer, expert) = staged.expect("should_promote implies Some(staged)");
             let bank = &mut self.bank;
             let promoted = steps.unresolved(progress, |unresolved| {

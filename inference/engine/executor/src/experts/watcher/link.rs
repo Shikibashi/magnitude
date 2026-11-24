@@ -117,7 +117,17 @@ impl LinkMover {
             for (group, record, batch) in core.directory.copying() {
                 match copier.copies.completed(batch) {
                     Ok(false) => {}
-                    Ok(true) => completed.push((group, record)),
+                    Ok(true) => {
+                        // Completion of the copy batch can precede its transport
+                        // update, and a joined demand can still hold this slot.
+                        // Leave it copying until the registry can retire the hint.
+                        if shared.transport.try_release_hint_slot(crate::experts::transport::DestSlot {
+                            group,
+                            slot: record.index(),
+                        }) {
+                            completed.push((group, record));
+                        }
+                    }
                     Err(error) => {
                         core.directory.unpromoted(group, record);
                         shared.end_serving(format!("a promotion's copy into the bank: {error}"));
@@ -128,11 +138,6 @@ impl LinkMover {
             if !completed.is_empty() {
                 let link = completed.iter().map(|&(group, _)| copy.transfer.transfer_seconds(bytes[group] as f64)).sum::<f64>();
                 shared.telemetry.moved(link, completed.len());
-                for &(group, record) in &completed {
-                    shared
-                        .transport
-                        .try_release_hint_slot(crate::experts::transport::DestSlot { group, slot: record.index() });
-                }
                 core.directory.promoted(completed, progress, &core.steps);
                 moved = true;
             }

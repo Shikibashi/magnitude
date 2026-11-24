@@ -269,6 +269,15 @@ fn the_promotions_asked_together_copy_each_as_its_own_batch() {
 ///    exact bytes, and empty `deferred_syncs` after drain.
 #[test]
 fn zero_recopy_demand_landing_five_way_invariant_test() {
+    demand_landing_with_joined_consumer(false);
+}
+
+#[test]
+fn demand_landing_does_not_publish_while_a_joined_consumer_holds_the_slot() {
+    demand_landing_with_joined_consumer(true);
+}
+
+fn demand_landing_with_joined_consumer(keep_consumer: bool) {
     use crate::experts::directory::{BankRecord, DemandSlotClaim, Directory, HostRecord, HostTier, Placement, Point, RoutedRead};
     use crate::experts::host_records::{Claim, Refuses, Taking};
     use crate::experts::map::StampedMap;
@@ -441,7 +450,10 @@ fn zero_recopy_demand_landing_five_way_invariant_test() {
 
     // 5. Flight 3 completes -> O(1) zero-recopy promotion `DemandLanding -> Held((0, E))`!
     transport.complete_dma(id);
-    joined.lease.release();
+    let mut joined_lease = Some(joined.lease);
+    if !keep_consumer {
+        joined_lease.take().unwrap().release();
+    }
     transport.drain_deferred_syncs();
     assert_eq!(transport.deferred_syncs_len(), 0, "deferred_syncs must be empty after drain");
 
@@ -461,6 +473,14 @@ fn zero_recopy_demand_landing_five_way_invariant_test() {
         transport.can_reuse_slot(dest),
     );
     steps.end_played(flight3);
+    if let Some(lease) = joined_lease {
+        assert!(!promoted, "a demand landing must stay unpublished while a consumer pins its slot");
+        assert_eq!(map.held(E), None);
+        assert!(!directory.drain_demand_landings(|group, slot| transport.can_reuse_slot(DestSlot { group, slot })));
+        lease.release();
+        assert!(directory.drain_demand_landings(|group, slot| transport.can_reuse_slot(DestSlot { group, slot })));
+        return;
+    }
     assert!(promoted, "E must be O(1)-promoted in place with copy_hits = 0.0");
     assert_eq!(transport.transfers_issued(), 1, "O(1) promotion must issue ZERO second H2D");
     assert_eq!(directory.held(0, E), Some(slot_v), "slot_v must now be Record::Held((0, E))");
